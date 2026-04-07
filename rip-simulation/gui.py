@@ -1,14 +1,69 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
+import os
 
 from rip_algorithm import run_rip_round
 from utils import format_routing_table
 from router import Router
 
+# ── PIL / Pillow (for image assets) ───────────────────────────
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
 
 # ═══════════════════════════════════════════════════════════════
-#  TOPOLOGY EDITOR  (modal window shown before / during simulation)
+#  IMAGE LOADER  (loads + tints router/packet assets)
+# ═══════════════════════════════════════════════════════════════
+
+def _tint_image(pil_img, color_hex, alpha=0.55):
+    """Blend a PIL RGBA image with a solid colour to show router state."""
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    img     = pil_img.convert("RGBA")
+    overlay = Image.new("RGBA", img.size, (r, g, b, int(255 * alpha)))
+    return Image.alpha_composite(img, overlay)
+
+
+def load_assets(base_dir, node_size=52, packet_size=22):
+    """
+    Load router.png and packet.png from assets/ folder.
+    Returns a dict of ImageTk.PhotoImage objects, or None if unavailable.
+    """
+    if not PIL_AVAILABLE:
+        return None
+
+    assets_dir  = os.path.join(base_dir, "assets")
+    router_path = os.path.join(assets_dir, "router.png")
+    packet_path = os.path.join(assets_dir, "packet.png")
+
+    if not os.path.exists(router_path) or not os.path.exists(packet_path):
+        return None
+
+    try:
+        router_base = Image.open(router_path).convert("RGBA").resize(
+            (node_size, node_size), Image.LANCZOS)
+
+        assets = {
+            "router_default":   ImageTk.PhotoImage(_tint_image(router_base, "#2c3e50", 0.0)),
+            "router_updated":   ImageTk.PhotoImage(_tint_image(router_base, "#e67e22", 0.45)),
+            "router_converged": ImageTk.PhotoImage(_tint_image(router_base, "#27ae60", 0.45)),
+            "packet": ImageTk.PhotoImage(
+                Image.open(packet_path).convert("RGBA").resize(
+                    (packet_size, packet_size), Image.LANCZOS))
+        }
+        return assets
+    except Exception as e:
+        print(f"[WARN] Could not load assets: {e}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
+#  TOPOLOGY EDITOR
 # ═══════════════════════════════════════════════════════════════
 
 class TopologyEditor(tk.Toplevel):
@@ -25,11 +80,10 @@ class TopologyEditor(tk.Toplevel):
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._cancel)
 
-        self.result        = None
-        self._routers_raw  = []    # list of str names
-        self._links_raw    = []    # list of (A, B) tuples (sorted)
+        self.result       = None
+        self._routers_raw = []
+        self._links_raw   = []
 
-        # Seed from existing topology
         if default_routers:
             seen = set()
             for name, r in default_routers.items():
@@ -43,17 +97,14 @@ class TopologyEditor(tk.Toplevel):
 
         self._build_ui()
 
-    # ── UI ─────────────────────────────────────────────────────
-
     def _build_ui(self):
         p = dict(padx=8, pady=4)
 
-        tk.Label(self, text="🖧  Network Topology Editor",
+        tk.Label(self, text="[NET]  Network Topology Editor",
                  font=("Arial", 14, "bold"), fg="#1a237e").pack(pady=(14, 2))
         tk.Label(self, text="Define routers and connect them with links.",
                  font=("Arial", 9), fg="#555").pack(pady=(0, 6))
 
-        # ── Routers ────────────────────────────────────────────
         rf = ttk.LabelFrame(self, text="  Routers  ", padding=8)
         rf.pack(fill=tk.X, padx=16, pady=6)
 
@@ -62,16 +113,15 @@ class TopologyEditor(tk.Toplevel):
         self._ent_rname = ttk.Entry(r1, width=10)
         self._ent_rname.pack(side=tk.LEFT, **p)
         self._ent_rname.bind("<Return>", lambda e: self._add_router())
-        ttk.Button(r1, text="＋ Add",    command=self._add_router).pack(side=tk.LEFT, **p)
-        ttk.Button(r1, text="✕ Remove",  command=self._del_router).pack(side=tk.LEFT, **p)
+        ttk.Button(r1, text="+ Add",    command=self._add_router).pack(side=tk.LEFT, **p)
+        ttk.Button(r1, text="- Remove", command=self._del_router).pack(side=tk.LEFT, **p)
 
         self._lb_routers = tk.Listbox(rf, height=4, selectmode=tk.SINGLE,
-                                      font=("Consolas", 10))
+                                      font=("Courier", 10))
         self._lb_routers.pack(fill=tk.X, padx=4, pady=(4, 0))
         for n in self._routers_raw:
             self._lb_routers.insert(tk.END, n)
 
-        # ── Links ──────────────────────────────────────────────
         lf = ttk.LabelFrame(self, text="  Links  ", padding=8)
         lf.pack(fill=tk.X, padx=16, pady=6)
 
@@ -86,25 +136,22 @@ class TopologyEditor(tk.Toplevel):
         self._cb_to    = ttk.Combobox(r2, textvariable=self._to_var,
                                       width=9, state="readonly")
         self._cb_to.pack(side=tk.LEFT, **p)
-        ttk.Button(r2, text="＋ Add Link",  command=self._add_link).pack(side=tk.LEFT, **p)
-        ttk.Button(r2, text="✕ Remove",     command=self._del_link).pack(side=tk.LEFT, **p)
+        ttk.Button(r2, text="+ Add Link", command=self._add_link).pack(side=tk.LEFT, **p)
+        ttk.Button(r2, text="- Remove",   command=self._del_link).pack(side=tk.LEFT, **p)
 
         self._lb_links = tk.Listbox(lf, height=4, selectmode=tk.SINGLE,
-                                    font=("Consolas", 10))
+                                    font=("Courier", 10))
         self._lb_links.pack(fill=tk.X, padx=4, pady=(4, 0))
         for (a, b) in self._links_raw:
-            self._lb_links.insert(tk.END, f"{a}  ──  {b}")
+            self._lb_links.insert(tk.END, f"{a}  --  {b}")
 
         self._refresh_combos()
 
-        # ── Buttons ────────────────────────────────────────────
         bf = ttk.Frame(self); bf.pack(pady=16)
-        ttk.Button(bf, text="✔  Start Simulation",
+        ttk.Button(bf, text="[OK]  Start Simulation",
                    command=self._confirm).pack(side=tk.LEFT, padx=12)
-        ttk.Button(bf, text="✘  Cancel",
+        ttk.Button(bf, text="[X]  Cancel",
                    command=self._cancel).pack(side=tk.LEFT, padx=12)
-
-    # ── Helpers ────────────────────────────────────────────────
 
     def _refresh_combos(self):
         vals = sorted(self._routers_raw)
@@ -136,7 +183,7 @@ class TopologyEditor(tk.Toplevel):
                            if a != name and b != name]
         self._lb_links.delete(0, tk.END)
         for (a, b) in self._links_raw:
-            self._lb_links.insert(tk.END, f"{a}  ──  {b}")
+            self._lb_links.insert(tk.END, f"{a}  --  {b}")
         self._refresh_combos()
 
     def _add_link(self):
@@ -156,7 +203,7 @@ class TopologyEditor(tk.Toplevel):
                                    "That link already exists.", parent=self)
             return
         self._links_raw.append(edge)
-        self._lb_links.insert(tk.END, f"{edge[0]}  ──  {edge[1]}")
+        self._lb_links.insert(tk.END, f"{edge[0]}  --  {edge[1]}")
 
     def _del_link(self):
         sel = self._lb_links.curselection()
@@ -192,14 +239,15 @@ class TopologyEditor(tk.Toplevel):
 
 class RIPSimulationGUI:
 
-    # ── Visual / timing constants ──────────────────────────────
-    AUTO_DELAY_MS   = 2400   # ms between auto-run rounds (>1 s)
-    PARTICLE_FRAMES = 45     # frames per travelling dot
-    PARTICLE_MS     = 16     # ms per frame  → ~720 ms travel time
-    PARTICLE_R      = 6      # dot radius (px)
-    STAGGER_MS      = 10     # stagger between particles
+    AUTO_DELAY_MS   = 2400
+    PARTICLE_FRAMES = 45
+    PARTICLE_MS     = 16
+    PARTICLE_R      = 11     # fallback dot radius when no image
+    STAGGER_MS      = 10
 
-    NODE_R          = 24
+    NODE_R          = 26     # fallback oval radius when no image
+    NODE_IMG_HALF   = 26     # half of node image size (52/2)
+
     COL_BG          = "#1e272e"
     COL_CANVAS      = "#f5f6fa"
     COL_LINK_IDLE   = "#95a5a6"
@@ -210,27 +258,31 @@ class RIPSimulationGUI:
     COL_PARTICLE    = "#e74c3c"
     COL_GLOW        = "#f39c12"
 
-    # ──────────────────────────────────────────────────────────
-
     def __init__(self, root, routers):
-        self.root             = root
-        self.routers          = routers
-        self.round_number     = 0
-        self.converged        = False
-        self.selected_router  = None
-        self._animating       = False
+        self.root            = root
+        self.routers         = routers
+        self.round_number    = 0
+        self.converged       = False
+        self.selected_router = None
+        self._animating      = False
 
         self.root.title("RIP Protocol Simulation")
         self.root.geometry("1150x760")
         self.root.configure(bg=self.COL_BG)
 
+        base_dir      = os.path.dirname(os.path.abspath(__file__))
+        self.assets   = load_assets(base_dir)
+        self._use_img = self.assets is not None
+        if self._use_img:
+            print("[INFO] Image assets loaded successfully.")
+        else:
+            print("[INFO] Assets not found or PIL unavailable - using shapes.")
+
         self.node_positions = self._calc_positions()
         self._setup_ui()
         self._draw_network()
-        self._log("Topology loaded — click Next Round or Auto Run to begin.")
+        self._log("Topology loaded - click Next Round or Auto Run to begin.")
 
-    # ──────────────────────────────────────────────────────────
-    # Position helpers
     # ──────────────────────────────────────────────────────────
 
     def _calc_positions(self):
@@ -243,12 +295,7 @@ class RIPSimulationGUI:
                       cy + rad * math.sin(angle))
         return pos
 
-    # ──────────────────────────────────────────────────────────
-    # UI construction
-    # ──────────────────────────────────────────────────────────
-
     def _setup_ui(self):
-        # ── Top bar ────────────────────────────────────────────
         top = tk.Frame(self.root, bg=self.COL_BG, height=56)
         top.pack(side=tk.TOP, fill=tk.X)
 
@@ -260,43 +307,39 @@ class RIPSimulationGUI:
 
         btn_kw = dict(bg="#34495e", fg="white",
                       relief=tk.FLAT, font=("Arial", 10, "bold"),
-                      activebackground="#4a6278",
-                      activeforeground="white",
+                      activebackground="#4a6278", activeforeground="white",
                       padx=10, pady=5, cursor="hand2")
 
-        self.btn_next  = tk.Button(top, text="▶  Next Round",
+        self.btn_next  = tk.Button(top, text=">  Next Round",
                                    command=self._next_round, **btn_kw)
         self.btn_next.pack(side=tk.LEFT, padx=6, pady=10)
 
-        self.btn_auto  = tk.Button(top, text="⏩  Auto Run",
+        self.btn_auto  = tk.Button(top, text=">>  Auto Run",
                                    command=self._auto_run, **btn_kw)
         self.btn_auto.pack(side=tk.LEFT, padx=6, pady=10)
 
-        self.btn_edit  = tk.Button(top, text="🖧  Edit Topology",
+        self.btn_edit  = tk.Button(top, text="[NET]  Edit Topology",
                                    command=self._edit_topology, **btn_kw)
         self.btn_edit.pack(side=tk.LEFT, padx=6, pady=10)
 
-        self.btn_reset = tk.Button(top, text="↺  Reset",
+        self.btn_reset = tk.Button(top, text="<<  Reset",
                                    command=self._reset_simulation, **btn_kw)
         self.btn_reset.pack(side=tk.LEFT, padx=6, pady=10)
 
         self.lbl_status = tk.Label(
-            top, text="● Initialized",
+            top, text="* Initialized",
             font=("Arial", 10, "bold"),
             bg=self.COL_BG, fg="#1abc9c")
         self.lbl_status.pack(side=tk.RIGHT, padx=24)
 
-        # ── Main split ─────────────────────────────────────────
         main_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
-        # Canvas
         cf = tk.Frame(main_pane, bg=self.COL_CANVAS, relief=tk.FLAT)
         self.canvas = tk.Canvas(cf, bg=self.COL_CANVAS, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         main_pane.add(cf, weight=3)
 
-        # Right panel
         rp = ttk.Frame(main_pane)
         main_pane.add(rp, weight=1)
 
@@ -305,23 +348,19 @@ class RIPSimulationGUI:
         tk.Label(rp, text="(click a router)",
                  font=("Arial", 8), fg="gray").pack()
 
-        self.txt_tables = tk.Text(rp, height=17,
-                                  font=("Consolas", 10),
-                                  state="disabled",
-                                  bg="#f9f9f9", relief=tk.FLAT, bd=0)
-        sb1 = ttk.Scrollbar(rp, command=self.txt_tables.yview)
-        self.txt_tables.configure(yscrollcommand=sb1.set)
+        self.txt_tables = tk.Text(rp, height=17, font=("Courier", 10),
+                                  state="disabled", bg="#f9f9f9",
+                                  relief=tk.FLAT, bd=0)
+        ttk.Scrollbar(rp, command=self.txt_tables.yview)
         self.txt_tables.pack(fill=tk.BOTH, expand=True, padx=4, side=tk.TOP)
 
         tk.Label(rp, text="Simulation Logs",
                  font=("Arial", 10, "bold")).pack(pady=(8, 0))
 
-        self.txt_logs = tk.Text(rp, height=12,
-                                font=("Consolas", 9),
-                                state="disabled",
-                                bg="#f9f9f9", relief=tk.FLAT, bd=0)
-        sb2 = ttk.Scrollbar(rp, command=self.txt_logs.yview)
-        self.txt_logs.configure(yscrollcommand=sb2.set)
+        self.txt_logs = tk.Text(rp, height=12, font=("Courier", 9),
+                                state="disabled", bg="#f9f9f9",
+                                relief=tk.FLAT, bd=0)
+        ttk.Scrollbar(rp, command=self.txt_logs.yview)
         self.txt_logs.pack(fill=tk.BOTH, expand=True, padx=4)
 
     # ──────────────────────────────────────────────────────────
@@ -329,7 +368,6 @@ class RIPSimulationGUI:
     # ──────────────────────────────────────────────────────────
 
     def _draw_network(self, highlight=None, active_links=None):
-        """Redraw the static topology (nodes + links). Particles stay on top."""
         self.canvas.delete("static")
 
         # Links
@@ -347,34 +385,54 @@ class RIPSimulationGUI:
                 lw = 3 if active else 2
                 self.canvas.create_line(x1, y1, x2, y2,
                                         fill=lc, width=lw, tags="static")
-                # mid-label shows cost (always 1 in RIP)
                 mx, my = (x1+x2)/2, (y1+y2)/2
                 self.canvas.create_text(mx, my-8, text="1",
                                         fill="#7f8c8d",
                                         font=("Arial", 8), tags="static")
 
         # Nodes
-        r = self.NODE_R
         for name, (x, y) in self.node_positions.items():
-            updated   = highlight and name in highlight
-            col_fill  = (self.COL_NODE_CONV if self.converged
-                         else self.COL_NODE_UPD if updated
-                         else self.COL_NODE_DEF)
+            updated = highlight and name in highlight
 
-            # Glow ring on update
-            if updated:
-                self.canvas.create_oval(x-r-6, y-r-6, x+r+6, y+r+6,
-                                        fill="", outline=self.COL_GLOW,
-                                        width=3, tags=("static", name))
+            if self._use_img:
+                if self.converged:
+                    img = self.assets["router_converged"]
+                elif updated:
+                    img = self.assets["router_updated"]
+                else:
+                    img = self.assets["router_default"]
 
-            self.canvas.create_oval(x-r, y-r, x+r, y+r,
-                                    fill=col_fill, outline="white",
-                                    width=2, tags=("static", name))
-            self.canvas.create_text(x, y, text=name, fill="white",
-                                    font=("Arial", 10, "bold"),
-                                    tags=("static", name))
+                # Glow ring behind image on update
+                if updated:
+                    nr = self.NODE_IMG_HALF + 8
+                    self.canvas.create_oval(x-nr, y-nr, x+nr, y+nr,
+                                            fill="", outline=self.COL_GLOW,
+                                            width=3, tags=("static", name))
 
-            # Bind click + hover
+                self.canvas.create_image(x, y, image=img,
+                                         tags=("static", name))
+                # Label below the router image
+                self.canvas.create_text(x, y + self.NODE_IMG_HALF + 10,
+                                        text=name, fill="#2c3e50",
+                                        font=("Arial", 10, "bold"),
+                                        tags=("static", name))
+            else:
+                # Fallback: coloured ovals
+                r = self.NODE_R
+                col_fill = (self.COL_NODE_CONV if self.converged
+                            else self.COL_NODE_UPD if updated
+                            else self.COL_NODE_DEF)
+                if updated:
+                    self.canvas.create_oval(x-r-6, y-r-6, x+r+6, y+r+6,
+                                            fill="", outline=self.COL_GLOW,
+                                            width=3, tags=("static", name))
+                self.canvas.create_oval(x-r, y-r, x+r, y+r,
+                                        fill=col_fill, outline="white",
+                                        width=2, tags=("static", name))
+                self.canvas.create_text(x, y, text=name, fill="white",
+                                        font=("Arial", 10, "bold"),
+                                        tags=("static", name))
+
             self.canvas.tag_bind(name, "<Button-1>",
                                  lambda e, n=name: self._show_table(n))
             self.canvas.tag_bind(name, "<Enter>",
@@ -383,21 +441,16 @@ class RIPSimulationGUI:
                                  lambda e: self._off_hover())
 
     # ──────────────────────────────────────────────────────────
-    # Packet / particle animation
+    # Packet animation
     # ──────────────────────────────────────────────────────────
 
     def _animate_packets(self, messages, on_done):
-        """
-        Fire one animated dot per RIP message.
-        Dots are staggered so they don't all launch simultaneously.
-        Calls on_done() once every particle has reached its destination.
-        """
         if not messages:
             on_done()
             return
 
-        total     = len(messages)
-        finished  = [0]
+        total    = len(messages)
+        finished = [0]
 
         def particle_done():
             finished[0] += 1
@@ -415,12 +468,18 @@ class RIPSimulationGUI:
     def _launch_particle(self, sender, receiver, on_done):
         x1, y1 = self.node_positions[sender]
         x2, y2 = self.node_positions[receiver]
-        pr = self.PARTICLE_R
-        dot = self.canvas.create_oval(
-            x1-pr, y1-pr, x1+pr, y1+pr,
-            fill=self.COL_PARTICLE, outline="white", width=1,
-            tags="particle"
-        )
+
+        if self._use_img:
+            dot = self.canvas.create_image(x1, y1,
+                                           image=self.assets["packet"],
+                                           tags="particle")
+        else:
+            pr  = self.PARTICLE_R
+            dot = self.canvas.create_oval(
+                x1-pr, y1-pr, x1+pr, y1+pr,
+                fill=self.COL_PARTICLE, outline="white", width=1,
+                tags="particle")
+
         frame = [0]
         N     = self.PARTICLE_FRAMES
 
@@ -434,29 +493,29 @@ class RIPSimulationGUI:
             t2 = t * t * (3 - 2 * t)   # smooth-step easing
             nx = x1 + (x2 - x1) * t2
             ny = y1 + (y2 - y1) * t2
-            self.canvas.coords(dot, nx-pr, ny-pr, nx+pr, ny+pr)
+            if self._use_img:
+                self.canvas.coords(dot, nx, ny)
+            else:
+                pr = self.PARTICLE_R
+                self.canvas.coords(dot, nx-pr, ny-pr, nx+pr, ny+pr)
             frame[0] += 1
             self.root.after(self.PARTICLE_MS, step)
 
         step()
 
     # ──────────────────────────────────────────────────────────
-    # Hover helpers
+    # Hover / log / table
     # ──────────────────────────────────────────────────────────
 
     def _on_hover(self, name):
         r  = self.routers[name]
         nb = ", ".join(sorted(n.name for n in r.neighbors))
         self.lbl_status.config(
-            text=f"  {name} — neighbors: {nb}", fg="#1abc9c")
+            text=f"  {name} - neighbors: {nb}", fg="#1abc9c")
 
     def _off_hover(self):
         if not self.converged:
-            self.lbl_status.config(text="● Running…", fg="#f39c12")
-
-    # ──────────────────────────────────────────────────────────
-    # Logging / table display
-    # ──────────────────────────────────────────────────────────
+            self.lbl_status.config(text="* Running...", fg="#f39c12")
 
     def _log(self, msg):
         self.txt_logs.config(state="normal")
@@ -489,9 +548,8 @@ class RIPSimulationGUI:
         self.round_number += 1
         self.lbl_round.config(text=f"Round: {self.round_number}")
         self.lbl_status.config(
-            text=f"● Round {self.round_number} — transmitting…", fg="#f39c12")
+            text=f"* Round {self.round_number} - transmitting...", fg="#f39c12")
 
-        # Collect all RIP messages (snapshots, before any update)
         messages = []
         for rname, router in self.routers.items():
             snap = router.get_routing_table()
@@ -500,13 +558,11 @@ class RIPSimulationGUI:
                                   "receiver": nb.name,
                                   "table": snap})
 
-        # Highlight active links during animation
         active = {tuple(sorted((m["sender"], m["receiver"])))
                   for m in messages}
         self._draw_network(active_links=active)
 
         def after_animation():
-            # Apply RIP algorithm
             converged, updates = run_rip_round(self.routers)
 
             changed = set()
@@ -514,7 +570,7 @@ class RIPSimulationGUI:
                 self._log(msg)
                 parts = msg.split()
                 if parts:
-                    changed.add(parts[0])   # first word is receiver name
+                    changed.add(parts[0])
 
             if not updates:
                 self._log(f"[Round {self.round_number}] No changes.")
@@ -526,8 +582,8 @@ class RIPSimulationGUI:
 
             if converged:
                 self.converged = True
-                self._draw_network()   # redraw in converged colour
-                self.lbl_status.config(text="✔  CONVERGED", fg="#2ecc71")
+                self._draw_network()
+                self.lbl_status.config(text="[OK]  CONVERGED", fg="#2ecc71")
                 self._log(
                     f">>> Network converged after {self.round_number} round(s) <<<")
                 messagebox.showinfo(
@@ -535,7 +591,7 @@ class RIPSimulationGUI:
                     f"Network converged in {self.round_number} round(s)!")
             else:
                 self.lbl_status.config(
-                    text=f"● Round {self.round_number} done", fg="#1abc9c")
+                    text=f"* Round {self.round_number} done", fg="#1abc9c")
                 self.btn_next.config(state="normal")
                 self.btn_auto.config(state="normal")
 
@@ -559,7 +615,6 @@ class RIPSimulationGUI:
     # ──────────────────────────────────────────────────────────
 
     def _edit_topology(self):
-        """Open the topology editor; reload if the user confirms."""
         ed = TopologyEditor(self.root, default_routers=self.routers)
         self.root.wait_window(ed)
         if ed.result:
@@ -567,8 +622,6 @@ class RIPSimulationGUI:
             self._full_reset()
 
     def _reset_simulation(self):
-        """Rebuild routing tables from scratch and redraw."""
-        # Reconstruct Router objects from current topology links
         names = list(self.routers.keys())
         edges = set()
         for n, r in self.routers.items():
@@ -594,7 +647,7 @@ class RIPSimulationGUI:
         self._draw_network()
 
         self.lbl_round.config(text="Round: 0")
-        self.lbl_status.config(text="● Initialized", fg="#1abc9c")
+        self.lbl_status.config(text="* Initialized", fg="#1abc9c")
         self.btn_next.config(state="normal")
         self.btn_auto.config(state="normal")
 
@@ -603,5 +656,5 @@ class RIPSimulationGUI:
             w.delete(1.0, tk.END)
             w.config(state="disabled")
 
-        self._log(f"Topology loaded — "
+        self._log(f"Topology loaded - "
                   f"{len(self.routers)} routers, ready to simulate.")
