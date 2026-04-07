@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Kinetic Terminal - Network Simulation</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<!-- vis.js Network -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/standalone/umd/vis-network.min.js"></script>
+<!-- Socket.IO -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+<script id="tailwind-config">
+tailwind.config = {
+    darkMode: "class",
+    theme: {
+        extend: {
+            colors: {
+                "on-primary": "#002f58",
+                "surface-container-lowest": "#000000",
+                "secondary": "#83fc89",
+                "primary-fixed": "#58a6ff",
+                "on-surface": "#f1f3fc",
+                "primary-container": "#55a3fc",
+                "on-error-container": "#ffa8a3",
+                "on-background": "#f1f3fc",
+                "error": "#ff716c",
+                "outline": "#72757d",
+                "surface": "#0a0e14",
+                "on-secondary": "#005f1c",
+                "secondary-container": "#006e21",
+                "surface-variant": "#20262f",
+                "surface-bright": "#262c36",
+                "primary": "#72b1ff",
+                "inverse-on-surface": "#51555c",
+                "surface-container": "#151a21",
+                "background": "#0a0e14",
+                "surface-container-high": "#1b2028",
+                "surface-dim": "#0a0e14",
+                "tertiary": "#ff9880",
+                "primary-fixed-dim": "#4899f1",
+                "tertiary-dim": "#f17c62",
+                "surface-container-highest": "#20262f",
+                "outline-variant": "#44484f",
+                "primary-dim": "#52a1f9",
+                "on-surface-variant": "#a8abb3",
+                "surface-container-low": "#0f141a",
+            },
+            fontFamily: {
+                "headline": ["Space Grotesk"],
+                "body":     ["Space Grotesk"],
+                "label":    ["Space Grotesk"]
+            },
+            borderRadius: { "DEFAULT": "0px", "lg": "0px", "xl": "0px", "full": "9999px" },
+        },
+    },
+}
+</script>
+
+<style>
+body { font-family: 'Space Grotesk', sans-serif; background-color: #0a0e14; color: #f1f3fc; min-height: 100dvh; }
+.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+.glass-panel { background: rgba(32,38,47,0.4); backdrop-filter: blur(20px); border: 1px solid rgba(114,177,255,0.1); }
+.scanline    { background: linear-gradient(to bottom, transparent 50%, rgba(114,177,255,0.05) 50%); background-size: 100% 4px; pointer-events: none; }
+
+/* vis.js container */
+#vis-container { width: 100%; height: 100%; }
+
+/* Packet animation overlay */
+#packet-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 20; }
+.packet-dot {
+    position: absolute;
+    width: 20px; height: 20px;
+    filter: drop-shadow(0 0 6px #72b1ff) drop-shadow(0 0 3px #fff);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    border-radius: 50%;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(114,177,255,0.2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(114,177,255,0.4); }
+
+/* Topology modal */
+#topo-modal {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(10,14,20,0.85); backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center;
+}
+#topo-modal.hidden { display: none; }
+</style>
+</head>
+
+<body class="overflow-hidden h-screen flex flex-col selection:bg-primary selection:text-on-primary">
+
+<!-- ── TOP BAR ─────────────────────────────────────────── -->
+<header class="bg-[#0a0e14] z-50 bg-slate-900/50 backdrop-blur-xl shadow-[0_0_20px_rgba(114,177,255,0.04)] flex justify-between items-center w-full px-6 h-16">
+    <div class="flex items-center gap-4">
+        <span class="material-symbols-outlined text-blue-400 text-2xl">terminal</span>
+        <h1 class="text-xl font-bold tracking-tighter text-blue-400 font-['Space_Grotesk'] uppercase">KINETIC_TERMINAL</h1>
+    </div>
+
+    <!-- Round + Status -->
+    <div class="hidden md:flex items-center gap-6">
+        <div class="flex items-center gap-2 px-3 py-1 bg-surface-container-highest border border-outline-variant/20">
+            <span class="text-[10px] uppercase tracking-widest text-on-surface-variant">Round</span>
+            <span id="round-display" class="text-primary font-bold">000</span>
+        </div>
+        <div class="flex items-center gap-2">
+            <div id="status-dot" class="w-2 h-2 rounded-full bg-secondary shadow-[0_0_8px_#83fc89]"></div>
+            <span id="status-text" class="text-[10px] uppercase tracking-widest text-secondary font-bold">IDLE</span>
+        </div>
+    </div>
+
+    <!-- Control buttons -->
+    <div class="flex items-center gap-2">
+        <button id="btn-next"
+            class="bg-primary/10 text-blue-400 px-4 py-2 font-['Space_Grotesk'] uppercase tracking-[0.05rem] text-xs font-bold hover:text-blue-300 hover:shadow-[0_0_15px_rgba(114,177,255,0.3)] transition-all duration-300 active:scale-95 hidden md:block">
+            NEXT
+        </button>
+        <button id="btn-auto"
+            class="bg-primary/10 text-blue-400 px-4 py-2 font-['Space_Grotesk'] uppercase tracking-[0.05rem] text-xs font-bold hover:text-blue-300 hover:shadow-[0_0_15px_rgba(114,177,255,0.3)] transition-all duration-300 active:scale-95">
+            AUTO_RUN
+        </button>
+        <button id="btn-config"
+            class="hidden md:block bg-surface-variant/30 text-on-surface-variant px-4 py-2 font-['Space_Grotesk'] uppercase tracking-[0.05rem] text-xs font-bold hover:text-on-surface hover:bg-surface-variant/60 transition-all duration-300 active:scale-95">
+            CONFIG
+        </button>
+        <button id="btn-reset"
+            class="hidden md:block bg-surface-variant/30 text-on-surface-variant px-4 py-2 font-['Space_Grotesk'] uppercase tracking-[0.05rem] text-xs font-bold hover:text-error hover:border-error/30 transition-all duration-300 active:scale-95">
+            RESET
+        </button>
+    </div>
+</header>
+
+<!-- ── MAIN ───────────────────────────────────────────────── -->
+<main class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+    <div class="scanline absolute inset-0 z-0 opacity-20"></div>
+
+    <!-- Left: vis.js Canvas -->
+    <section class="w-full md:w-[70%] h-full relative overflow-hidden bg-surface-dim z-10">
+        <!-- Overlay info -->
+        <div class="absolute top-8 left-8 flex flex-col gap-1 z-20 pointer-events-none">
+            <span class="text-[10px] uppercase tracking-[0.2em] text-on-surface-variant/50">Sim_Context</span>
+            <span class="text-xs font-bold text-primary">LOCAL_CLUSTER_09</span>
+        </div>
+        <div class="absolute top-8 right-8 text-right z-20 pointer-events-none">
+            <span class="text-[10px] uppercase tracking-widest text-on-surface-variant/50 block">Selected_Node</span>
+            <span id="selected-node-name" class="text-sm font-bold text-primary">—</span>
+        </div>
+        <!-- Shift+click hint -->
+        <div class="absolute bottom-4 left-8 z-20 pointer-events-none">
+            <span class="text-[9px] uppercase tracking-widest text-on-surface-variant/30">Shift+Click edge to FAIL link</span>
+        </div>
+
+        <!-- vis.js mounts here -->
+        <div id="vis-container" class="absolute inset-0"></div>
+        <!-- Packet animation overlay -->
+        <div id="packet-overlay"></div>
+    </section>
+
+    <!-- Right: Panels -->
+    <aside class="w-full md:w-[30%] h-full flex flex-col p-4 gap-4 bg-surface-container-low/50 backdrop-blur-md z-20 border-l border-outline-variant/10">
+
+        <!-- Routing Table -->
+        <div class="flex-1 glass-panel flex flex-col overflow-hidden" id="routing-table-panel">
+            <div class="bg-surface-container-highest px-4 py-2 flex justify-between items-center">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-primary">Routing_Table</span>
+                <span class="material-symbols-outlined text-xs text-on-surface-variant">settings_ethernet</span>
+            </div>
+            <div class="flex-1 overflow-auto p-0">
+                <table class="w-full text-left text-[11px] font-['Space_Grotesk'] border-separate border-spacing-0">
+                    <thead class="sticky top-0 bg-surface-container-low/80 backdrop-blur-sm z-10">
+                        <tr>
+                            <th class="px-4 py-2 text-on-surface-variant/70 border-b border-outline-variant/10 font-medium">DEST_NODE</th>
+                            <th class="px-4 py-2 text-on-surface-variant/70 border-b border-outline-variant/10 font-medium">NEXT_HOP</th>
+                            <th class="px-4 py-2 text-on-surface-variant/70 border-b border-outline-variant/10 font-medium text-right">METRIC</th>
+                        </tr>
+                    </thead>
+                    <tbody id="routing-table-body" class="divide-y divide-outline-variant/5">
+                        <tr>
+                            <td colspan="3" class="px-4 py-6 text-center text-on-surface-variant/40 text-[10px] uppercase tracking-widest">
+                                Click a router node to inspect
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Log Panel -->
+        <div class="h-1/3 glass-panel flex flex-col overflow-hidden" id="log-panel">
+            <div class="bg-surface-container-highest px-4 py-2 flex justify-between items-center">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-primary">System_Log</span>
+                <span class="w-2 h-2 bg-secondary animate-pulse"></span>
+            </div>
+            <div id="log-container" class="flex-1 overflow-y-auto p-4 font-mono text-[10px] leading-relaxed text-on-surface-variant/80">
+                <!-- logs appended by JS -->
+            </div>
+        </div>
+    </aside>
+</main>
+
+<!-- ── FOOTER ─────────────────────────────────────────────── -->
+<footer class="h-20 bg-[#0a0e14]/80 backdrop-blur-2xl border-t border-blue-400/15 flex items-center px-6 relative z-50">
+    <div class="w-full flex flex-col md:flex-row gap-4 md:gap-12 items-center">
+        <div class="flex-1 w-full space-y-2">
+            <div class="flex justify-between items-end">
+                <span class="text-[10px] font-bold uppercase tracking-[0.2rem] text-primary">Convergence_Sequence</span>
+                <span id="progress-pct" class="text-xs font-bold text-on-surface">0%</span>
+            </div>
+            <div class="w-full h-1 bg-surface-container-highest relative overflow-hidden">
+                <div id="progress-bar" class="absolute top-0 left-0 h-full bg-primary shadow-[0_0_10px_#72b1ff] transition-all duration-500" style="width:0%"></div>
+            </div>
+        </div>
+        <div class="flex items-center gap-8 min-w-max pb-4 md:pb-0">
+            <div class="flex flex-col">
+                <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">TX_Packets</span>
+                <span id="tx-display" class="text-lg font-bold text-on-surface tracking-tighter">0</span>
+            </div>
+            <div class="flex flex-col">
+                <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">RX_Packets</span>
+                <span id="rx-display" class="text-lg font-bold text-on-surface tracking-tighter">0</span>
+            </div>
+            <div class="flex flex-col">
+                <span class="text-[9px] uppercase tracking-widest text-error">Dropped</span>
+                <span id="dropped-display" class="text-lg font-bold text-error tracking-tighter">0</span>
+            </div>
+        </div>
+    </div>
+</footer>
+
+<!-- ── MOBILE NAV ──────────────────────────────────────────── -->
+<nav class="md:hidden fixed bottom-0 left-0 w-full flex justify-around items-center h-20 px-4 pb-safe bg-[#0a0e14]/80 backdrop-blur-2xl z-50 border-t border-blue-400/15">
+    <div id="nav-start" class="flex flex-col items-center justify-center bg-blue-500/10 text-blue-400 p-3 cursor-pointer active:scale-95">
+        <span class="material-symbols-outlined">play_arrow</span>
+        <span class="font-['Space_Grotesk'] font-bold text-[10px] uppercase">START</span>
+    </div>
+    <div id="nav-metrics" class="flex flex-col items-center justify-center text-slate-600 p-3 cursor-pointer hover:text-blue-300 active:scale-95">
+        <span class="material-symbols-outlined">speed</span>
+        <span class="font-['Space_Grotesk'] font-bold text-[10px] uppercase">METRICS</span>
+    </div>
+    <div id="nav-config" class="flex flex-col items-center justify-center text-slate-600 p-3 cursor-pointer hover:text-blue-300 active:scale-95">
+        <span class="material-symbols-outlined">settings_ethernet</span>
+        <span class="font-['Space_Grotesk'] font-bold text-[10px] uppercase">CONFIG</span>
+    </div>
+    <div id="nav-reset" class="flex flex-col items-center justify-center text-slate-600 p-3 cursor-pointer hover:text-blue-300 active:scale-95">
+        <span class="material-symbols-outlined">refresh</span>
+        <span class="font-['Space_Grotesk'] font-bold text-[10px] uppercase">RESET</span>
+    </div>
+</nav>
+
+<!-- ── TOPOLOGY EDITOR MODAL ──────────────────────────────── -->
+<div id="topo-modal" class="hidden">
+    <div class="glass-panel w-full max-w-xl mx-4 flex flex-col" style="max-height:90vh;">
+
+        <!-- Header -->
+        <div class="bg-surface-container-highest px-6 py-3 flex justify-between items-center border-b border-outline-variant/20">
+            <div class="flex items-center gap-3">
+                <span class="material-symbols-outlined text-primary text-base">settings_ethernet</span>
+                <span class="text-sm font-bold uppercase tracking-widest text-primary">Edit_Topology</span>
+            </div>
+            <button onclick="closeTopologyEditor()" class="text-on-surface-variant hover:text-error transition-colors">
+                <span class="material-symbols-outlined text-base">close</span>
+            </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
+
+            <!-- ROUTERS SECTION -->
+            <div class="flex flex-col gap-3">
+                <span class="text-[10px] font-bold uppercase tracking-[0.2em] text-primary border-b border-primary/20 pb-2">Routers</span>
+                <div class="flex gap-2 items-center">
+                    <input id="new-router-input" type="text" placeholder="Router name e.g. R1" maxlength="8"
+                        class="flex-1 bg-surface-container border border-outline-variant/30 text-on-surface font-mono text-xs px-3 py-2 focus:outline-none focus:border-primary/60 uppercase placeholder:normal-case placeholder:text-on-surface-variant/40"
+                        onkeydown="if(event.key==='Enter') topoAddRouter()"/>
+                    <button onclick="topoAddRouter()"
+                        class="px-3 py-2 text-[10px] uppercase tracking-widest bg-primary/10 text-primary hover:bg-primary/20 transition-all font-bold whitespace-nowrap">
+                        + Add
+                    </button>
+                    <button onclick="topoRemoveRouter()"
+                        class="px-3 py-2 text-[10px] uppercase tracking-widest bg-error/10 text-error hover:bg-error/20 transition-all font-bold whitespace-nowrap">
+                        − Remove
+                    </button>
+                </div>
+                <select id="router-list" multiple
+                    class="bg-surface-container border border-outline-variant/20 text-on-surface font-mono text-xs w-full h-24 focus:outline-none"
+                    style="padding:4px;"></select>
+                <span class="text-[9px] text-on-surface-variant/40 uppercase tracking-widest">Click to select before removing</span>
+            </div>
+
+            <!-- LINKS SECTION -->
+            <div class="flex flex-col gap-3">
+                <span class="text-[10px] font-bold uppercase tracking-[0.2em] text-primary border-b border-primary/20 pb-2">Links</span>
+                <div class="flex gap-2 items-end">
+                    <div class="flex flex-col gap-1 flex-1">
+                        <span class="text-[9px] uppercase tracking-widest text-on-surface-variant/50">From</span>
+                        <select id="link-from"
+                            class="bg-surface-container border border-outline-variant/30 text-on-surface font-mono text-xs px-2 py-2 focus:outline-none focus:border-primary/60 w-full"></select>
+                    </div>
+                    <div class="flex flex-col gap-1 flex-1">
+                        <span class="text-[9px] uppercase tracking-widest text-on-surface-variant/50">To</span>
+                        <select id="link-to"
+                            class="bg-surface-container border border-outline-variant/30 text-on-surface font-mono text-xs px-2 py-2 focus:outline-none focus:border-primary/60 w-full"></select>
+                    </div>
+                    <button onclick="topoAddLink()"
+                        class="px-3 py-2 text-[10px] uppercase tracking-widest bg-primary/10 text-primary hover:bg-primary/20 transition-all font-bold whitespace-nowrap">
+                        + Link
+                    </button>
+                    <button onclick="topoRemoveLink()"
+                        class="px-3 py-2 text-[10px] uppercase tracking-widest bg-error/10 text-error hover:bg-error/20 transition-all font-bold whitespace-nowrap">
+                        − Remove
+                    </button>
+                </div>
+                <select id="link-list" multiple
+                    class="bg-surface-container border border-outline-variant/20 text-on-surface font-mono text-xs w-full h-24 focus:outline-none"
+                    style="padding:4px;"></select>
+                <span class="text-[9px] text-on-surface-variant/40 uppercase tracking-widest">Click to select before removing</span>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="px-6 py-4 border-t border-outline-variant/20 flex gap-3 justify-end bg-surface-container-low/60">
+            <button onclick="closeTopologyEditor()"
+                class="px-5 py-2 text-xs uppercase tracking-widest text-on-surface-variant hover:text-on-surface transition-colors">
+                Cancel
+            </button>
+            <button onclick="submitTopology()"
+                class="px-5 py-2 text-xs uppercase tracking-widest bg-primary/10 text-primary hover:bg-primary/20 hover:shadow-[0_0_15px_rgba(114,177,255,0.2)] transition-all font-bold">
+                Apply &amp; Simulate
+            </button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
